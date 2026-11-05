@@ -76,6 +76,7 @@
 #define MX35_MANUFACTURER              CONFIG_MX35_MANUFACTURER
 #define MX35_MX35LF1GE4AB_CAPACITY     0x12  /* 1 Gb */
 #define MX35_MX35LF2GE4AB_CAPACITY     0x22  /* 2 Gb */
+#define MX35_MX35LF2GE4AD_CAPACITY     0x26  /* 2 Gb, Device ID1 (C2h 26h 03h) */
 
 /* Chip Geometries **********************************************************/
 
@@ -234,6 +235,10 @@ static ssize_t mx35_write(FAR struct mtd_dev_s *dev,
                           off_t offset,
                           size_t nbytes,
                           FAR const uint8_t *buffer);
+static ssize_t mx35_bread(FAR struct mtd_dev_s *dev, off_t startblock,
+                          size_t nblocks, FAR uint8_t *buffer);
+static ssize_t mx35_bwrite(FAR struct mtd_dev_s *dev, off_t startblock,
+                           size_t nblocks, FAR const uint8_t *buffer);
 
 static int mx35_ioctl(FAR struct mtd_dev_s *dev,
                       int cmd,
@@ -337,6 +342,20 @@ static int mx35_readid(struct mx35_dev_s *priv)
           /* Save the FLASH geometry */
 
           priv->highcapacity = 1;
+          priv->sectorshift = MX35_MX35LF2GE4AB_SECTOR_SHIFT;
+          priv->nsectors    = MX35_MX35LF2GE4AB_NSECTORS;
+          priv->pageshift   = MX35_MX35LF2GE4AB_PAGE_SHIFT;
+          return OK;
+        }
+      else if (capacity == MX35_MX35LF2GE4AD_CAPACITY)
+        {
+          /* MX35LF2GE4AD: 2048 blocks x 64 pages x 2 KiB (+128 B spare).
+           * Unlike the 2 Gb AB part it has no plane-select bit (no RA[6] /
+           * CA[12] plane bit), so use the flat (non "highcapacity")
+           * row/column addressing.
+           */
+
+          priv->highcapacity = 0;
           priv->sectorshift = MX35_MX35LF2GE4AB_SECTOR_SHIFT;
           priv->nsectors    = MX35_MX35LF2GE4AB_NSECTORS;
           priv->pageshift   = MX35_MX35LF2GE4AB_PAGE_SHIFT;
@@ -771,7 +790,57 @@ static ssize_t mx35_write(FAR struct mtd_dev_s *dev,
 }
 
 /****************************************************************************
- * Name: mx25l_ioctl
+ * Name: mx35_bread
+ *
+ * Description:
+ *   Block (page) oriented read, used by block-based clients such as the
+ *   littlefs glue (MTD_BREAD).  A block is one page (1 << pageshift bytes).
+ *
+ ****************************************************************************/
+
+static ssize_t mx35_bread(FAR struct mtd_dev_s *dev, off_t startblock,
+                          size_t nblocks, FAR uint8_t *buffer)
+{
+  FAR struct mx35_dev_s *priv = (FAR struct mx35_dev_s *)dev;
+  ssize_t nbytes;
+
+  nbytes = mx35_read(dev, startblock << priv->pageshift,
+                     nblocks << priv->pageshift, buffer);
+  if (nbytes < 0)
+    {
+      return nbytes;
+    }
+
+  return nbytes >> priv->pageshift;
+}
+
+/****************************************************************************
+ * Name: mx35_bwrite
+ *
+ * Description:
+ *   Block (page) oriented write, used by block-based clients such as the
+ *   littlefs glue (MTD_BWRITE).  A block is one page.
+ *
+ ****************************************************************************/
+
+static ssize_t mx35_bwrite(FAR struct mtd_dev_s *dev, off_t startblock,
+                           size_t nblocks, FAR const uint8_t *buffer)
+{
+  FAR struct mx35_dev_s *priv = (FAR struct mx35_dev_s *)dev;
+  ssize_t nbytes;
+
+  nbytes = mx35_write(dev, startblock << priv->pageshift,
+                      nblocks << priv->pageshift, buffer);
+  if (nbytes < 0)
+    {
+      return nbytes;
+    }
+
+  return nbytes >> priv->pageshift;
+}
+
+/****************************************************************************
+ * Name: mx35_ioctl
  ****************************************************************************/
 
 static int mx35_ioctl(FAR struct mtd_dev_s *dev, int cmd, unsigned long arg)
@@ -949,6 +1018,8 @@ FAR struct mtd_dev_s *mx35_initialize(FAR struct spi_dev_s *dev)
       priv->mtd.erase  = mx35_erase;
       priv->mtd.read   = mx35_read;
       priv->mtd.write  = mx35_write;
+      priv->mtd.bread  = mx35_bread;
+      priv->mtd.bwrite = mx35_bwrite;
       priv->mtd.ioctl  = mx35_ioctl;
       priv->mtd.name   = "mx35";
       priv->dev        = dev;
